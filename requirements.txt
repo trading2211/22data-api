@@ -38,7 +38,6 @@ requests==2.31.0
 six==1.16.0
 SQLAlchemy==2.0.30
 tenacity==9.0.
-traitlets==5.
 tzdata==
 urllib==
 Werkzeug==
