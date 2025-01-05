@@ -2,6 +2,7 @@ import os
 import psycopg2
 from flask import Flask, jsonify
 import pandas as pd
+import time
 
 # Connect to Supabase (PostgreSQL)
 try:
@@ -11,14 +12,13 @@ try:
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
         dbname=os.getenv("DB_NAME"),
-        sslmode="require"  # Use secure SSL connection
+        sslmode="require"
     )
     print("Successfully connected to Supabase!")
 except Exception as e:
     print("Error connecting to Supabase:", e)
     conn = None
 
-# Initialize Flask app
 app = Flask(__name__)
 
 @app.route('/')
@@ -40,10 +40,13 @@ def get_max_retracement():
         outside_retracements = []
 
         # Batch size for processing
-        batch_size = 10000
+        batch_size = 1000  # Smaller batch size for efficiency
         offset = 0
 
         while True:
+            start_time = time.time()
+            print(f"Processing batch with OFFSET {offset}...")
+
             # Fetch a batch of data
             cur.execute(f"""
                 SELECT id, ts_event, rtype, publisher_id, instrument_id, open, high, low, close, volume, symbol, date 
@@ -62,15 +65,10 @@ def get_max_retracement():
             # Ensure 'date' column is in datetime format
             try:
                 batch_df['date'] = pd.to_datetime(batch_df['date'], errors='coerce')
+                batch_df.dropna(subset=['date'], inplace=True)
             except Exception as e:
                 print(f"Error converting 'date' column: {e}")
                 return {"error": f"Date conversion error: {e}"}, 500
-
-            # Drop rows where 'date' could not be converted
-            invalid_dates = batch_df[batch_df['date'].isna()]
-            if not invalid_dates.empty:
-                print("Invalid dates found:", invalid_dates)
-                batch_df.dropna(subset=['date'], inplace=True)
 
             # Process DR data (13:30-14:30 UTC+0)
             dr_data = batch_df[
@@ -81,7 +79,6 @@ def get_max_retracement():
                 dr_high = max(dr_high, dr_data['high'].max())
                 dr_low = min(dr_low, dr_data['low'].min())
 
-                # Calculate inside retracements
                 inside_df = dr_data[(dr_data['high'] < dr_high) & (dr_data['low'] > dr_low)].copy()
                 inside_df.loc[:, 'high_ret'] = (dr_high - inside_df['high']) / dr_high * 100
                 inside_df.loc[:, 'low_ret'] = (inside_df['low'] - dr_low) / dr_low * 100
@@ -117,10 +114,11 @@ def get_max_retracement():
                         if retracement > 0:
                             outside_retracements.append({'date': date, 'value': retracement})
 
-            # Increment offset for next batch
             offset += batch_size
 
-        # Calculate max retracements
+            end_time = time.time()
+            print(f"Batch with OFFSET {offset} processed in {end_time - start_time:.2f} seconds.")
+
         max_inside_ret = max([r['value'] for r in inside_retracements]) if inside_retracements else 0
         max_outside_ret = max([r['value'] for r in outside_retracements]) if outside_retracements else 0
 
