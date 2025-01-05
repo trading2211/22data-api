@@ -93,9 +93,8 @@ def get_max_retracement():
         return {"error": "Database connection not available"}, 500
     try:
         cur = conn.cursor()
-        # ... rest of your code ...
         
-        # First get DR data (13:30-14:30 UTC+0)
+        # Step 1: Get DR data (13:30-14:30 UTC+0)
         cur.execute("""
             SELECT date, high, low, close 
             FROM micro_e_mini_sp500_2019_2024_1min 
@@ -105,16 +104,22 @@ def get_max_retracement():
                 (EXTRACT(HOUR FROM date) = 14 AND EXTRACT(MINUTE FROM date) <= 30)
             ORDER BY date ASC;
         """)
-        
         dr_data = cur.fetchall()
         dr_columns = [desc[0] for desc in cur.description]
         dr_df = pd.DataFrame(dr_data, columns=dr_columns)
-        
-        # Calculate DR high and low
+
+        # Log DR data
+        if dr_df.empty:
+            raise ValueError("No DR data found for the specified time range")
+        print("DR Data:", dr_df.head())
+
+        # Step 2: Calculate DR high and low
         dr_high = dr_df['high'].max()
         dr_low = dr_df['low'].min()
-        
-        # Get post-DR data (14:30-19:00 UTC+0)
+        print("DR High:", dr_high)
+        print("DR Low:", dr_low)
+
+        # Step 3: Get post-DR data (14:30-19:00 UTC+0)
         cur.execute("""
             SELECT date, high, low, close 
             FROM micro_e_mini_sp500_2019_2024_1min 
@@ -124,15 +129,18 @@ def get_max_retracement():
                 (EXTRACT(HOUR FROM date) BETWEEN 15 AND 18)
             ORDER BY date ASC;
         """)
-        
         post_dr_data = cur.fetchall()
         post_dr_df = pd.DataFrame(post_dr_data, columns=dr_columns)
-        
-        # Initialize retracement lists
+
+        # Log post-DR data
+        if post_dr_df.empty:
+            raise ValueError("No post-DR data found for the specified time range")
+        print("Post-DR Data:", post_dr_df.head())
+
+        # Step 4: Calculate inside and outside retracements
         inside_retracements = []
         outside_retracements = []
-        
-        # Calculate inside DR retracements
+
         for _, row in dr_df.iterrows():
             if row['high'] < dr_high and row['low'] > dr_low:
                 high_ret = (dr_high - row['high']) / dr_high * 100
@@ -141,11 +149,10 @@ def get_max_retracement():
                     'date': row['date'].isoformat(),
                     'value': max(high_ret, low_ret)
                 })
-        
-        # Calculate outside DR retracements
+
         current_direction = None
         breakout_price = None
-        
+
         for _, row in post_dr_df.iterrows():
             if row['high'] > dr_high and current_direction != 'up':
                 current_direction = 'up'
@@ -153,7 +160,7 @@ def get_max_retracement():
             elif row['low'] < dr_low and current_direction != 'down':
                 current_direction = 'down'
                 breakout_price = dr_low
-                
+
             if current_direction == 'up' and breakout_price:
                 retracement = (row['low'] - breakout_price) / breakout_price * 100
                 if retracement < 0:
@@ -168,11 +175,11 @@ def get_max_retracement():
                         'date': row['date'].isoformat(),
                         'value': retracement
                     })
-        
-        # Calculate max retracements
+
+        # Step 5: Calculate max retracements
         max_inside_ret = max([r['value'] for r in inside_retracements]) if inside_retracements else 0
         max_outside_ret = max([r['value'] for r in outside_retracements]) if outside_retracements else 0
-        
+
         return jsonify({
             'dr_high': float(dr_high),
             'dr_low': float(dr_low),
@@ -181,9 +188,12 @@ def get_max_retracement():
             'inside_retracements': inside_retracements,
             'outside_retracements': outside_retracements
         })
-        
+
+    except ValueError as ve:
+        print(f"ValueError in /get_max_retracement: {ve}")
+        return {"error": str(ve)}, 400
     except Exception as e:
-        print(f"Error in get_max_retracement: {str(e)}")  # Add logging
+        print(f"Unexpected error in /get_max_retracement: {e}")
         return {"error": str(e)}, 500
 
 if __name__ == '__main__':
