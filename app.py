@@ -87,8 +87,11 @@ def get_dr_data():
 
 @app.route('/get_max_retracement')
 def get_max_retracement():
+    if conn is None:
+        return {"error": "Database connection not available"}, 500
     try:
         cur = conn.cursor()
+        # ... rest of your code ...
         
         # First get DR data (13:30-14:30 UTC+0)
         cur.execute("""
@@ -178,7 +181,8 @@ def get_max_retracement():
         })
         
     except Exception as e:
-        return {'error': str(e)}, 500
+        print(f"Error in get_max_retracement: {str(e)}")  # Add logging
+        return {"error": str(e)}, 500
 
 if __name__ == '__main__':
     if conn is not None:
