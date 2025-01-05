@@ -1,3 +1,30 @@
+import os
+import psycopg2
+from flask import Flask, jsonify
+import pandas as pd
+
+# Connect to Supabase (PostgreSQL)
+try:
+    conn = psycopg2.connect(
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+        sslmode="require"  # Use secure SSL connection
+    )
+    print("Successfully connected to Supabase!")
+except Exception as e:
+    print("Error connecting to Supabase:", e)
+    conn = None
+
+# Initialize Flask app
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bienvenue dans ma maison magique !"
+
 @app.route('/get_max_retracement')
 def get_max_retracement():
     if conn is None:
