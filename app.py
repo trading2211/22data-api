@@ -1,29 +1,3 @@
-import os
-import psycopg2
-from flask import Flask, jsonify
-import pandas as pd
-
-# Connect to Supabase (PostgreSQL)
-try:
-    conn = psycopg2.connect(
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"),
-        sslmode="require"
-    )
-    print("Successfully connected to Supabase!")
-except Exception as e:
-    print("Error connecting to Supabase:", e)
-    conn = None
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bienvenue dans ma maison magique !"
-
 @app.route('/get_max_retracement')
 def get_max_retracement():
     if conn is None:
@@ -45,7 +19,7 @@ def get_max_retracement():
         while True:
             # Fetch a batch of data
             cur.execute(f"""
-                SELECT date, high, low, close 
+                SELECT id, ts_event, rtype, publisher_id, instrument_id, open, high, low, close, volume, symbol, date 
                 FROM micro_e_mini_sp500_2019_2024_1min 
                 ORDER BY date ASC 
                 LIMIT {batch_size} OFFSET {offset};
@@ -58,9 +32,18 @@ def get_max_retracement():
             columns = [desc[0] for desc in cur.description]
             batch_df = pd.DataFrame(rows, columns=columns)
 
-            # Ensure 'date' column is datetime format
-            batch_df['date'] = pd.to_datetime(batch_df['date'], errors='coerce')
-            batch_df.dropna(subset=['date'], inplace=True)
+            # Ensure 'date' column is in datetime format
+            try:
+                batch_df['date'] = pd.to_datetime(batch_df['date'], errors='coerce')
+            except Exception as e:
+                print(f"Error converting 'date' column: {e}")
+                return {"error": f"Date conversion error: {e}"}, 500
+
+            # Drop rows where 'date' could not be converted
+            invalid_dates = batch_df[batch_df['date'].isna()]
+            if not invalid_dates.empty:
+                print("Invalid dates found:", invalid_dates)
+                batch_df.dropna(subset=['date'], inplace=True)
 
             # Process DR data (13:30-14:30 UTC+0)
             dr_data = batch_df[
