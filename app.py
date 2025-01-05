@@ -39,8 +39,8 @@ def get_max_retracement():
         inside_retracements = []
         outside_retracements = []
 
-        # Batch size for processing
-        batch_size = 1000  # Smaller batch size for efficiency
+        # Batch size for processing (adjusted for limited memory)
+        batch_size = 500
         offset = 0
 
         while True:
