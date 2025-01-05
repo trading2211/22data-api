@@ -11,7 +11,7 @@ try:
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
         dbname=os.getenv("DB_NAME"),
-        sslmode="disable"
+        sslmode="require"
     ) 
 
     print("Successfully connected to Supabase!")
