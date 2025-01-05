@@ -10,8 +10,10 @@ try:
         password=os.getenv("DB_PASSWORD"),
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME")
-    )
+        dbname=os.getenv("DB_NAME"),
+        sslmode="disable"
+    ) 
+
     print("Successfully connected to Supabase!")
 except Exception as e:
     print("Error connecting to Supabase:", e)
