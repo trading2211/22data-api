@@ -3,7 +3,7 @@ import psycopg2
 from flask import Flask, jsonify
 import pandas as pd
 
-# Connect to Supabase (PostgreSQL) using environment variables
+# Connect to Supabase (PostgreSQL)
 try:
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
@@ -11,14 +11,13 @@ try:
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
         dbname=os.getenv("DB_NAME"),
-        sslmode="require"  # Use secure SSL connection
+        sslmode="require"
     )
     print("Successfully connected to Supabase!")
 except Exception as e:
     print("Error connecting to Supabase:", e)
     conn = None
 
-# Initialize Flask app
 app = Flask(__name__)
 
 @app.route('/')
@@ -33,80 +32,85 @@ def get_max_retracement():
     try:
         cur = conn.cursor()
 
-        # Step 1: Fetch DR data (13:30-14:30 UTC+0)
-        cur.execute("""
-            SELECT date, high, low, close 
-            FROM micro_e_mini_sp500_2019_2024_1min 
-            WHERE 
-                (EXTRACT(HOUR FROM date) = 13 AND EXTRACT(MINUTE FROM date) >= 30)
-                OR 
-                (EXTRACT(HOUR FROM date) = 14 AND EXTRACT(MINUTE FROM date) <= 30)
-            ORDER BY date ASC;
-        """)
-        dr_data_rows = cur.fetchall()
-        dr_columns = [desc[0] for desc in cur.description]
-        dr_data = pd.DataFrame(dr_data_rows, columns=dr_columns)
-
-        # Ensure 'date' column is datetime format
-        dr_data['date'] = pd.to_datetime(dr_data['date'], errors='coerce')
-        dr_data.dropna(subset=['date'], inplace=True)
-
-        # Calculate DR high and low
-        dr_high = dr_data['high'].max()
-        dr_low = dr_data['low'].min()
-
-        # Step 2: Fetch post-DR data (14:30-19:00 UTC+0)
-        cur.execute("""
-            SELECT date, high, low, close 
-            FROM micro_e_mini_sp500_2019_2024_1min 
-            WHERE 
-                (EXTRACT(HOUR FROM date) = 14 AND EXTRACT(MINUTE FROM date) > 30)
-                OR 
-                (EXTRACT(HOUR FROM date) BETWEEN 15 AND 18)
-            ORDER BY date ASC;
-        """)
-        post_dr_rows = cur.fetchall()
-        post_dr_data = pd.DataFrame(post_dr_rows, columns=dr_columns)
-
-        post_dr_data['date'] = pd.to_datetime(post_dr_data['date'], errors='coerce')
-        post_dr_data.dropna(subset=['date'], inplace=True)
-
-        # Step 3: Calculate inside retracements
-        inside_df = dr_data[(dr_data['high'] < dr_high) & (dr_data['low'] > dr_low)]
-        inside_df['high_ret'] = (dr_high - inside_df['high']) / dr_high * 100
-        inside_df['low_ret'] = (inside_df['low'] - dr_low) / dr_low * 100
-        inside_df['value'] = inside_df[['high_ret', 'low_ret']].max(axis=1)
-        inside_retracements = inside_df[['date', 'value']].to_dict(orient='records')
-
-        # Step 4: Calculate outside retracements
-        current_direction = None
-        breakout_price = None
-
+        # Initialize variables for tracking DR and retracements
+        dr_high = float('-inf')
+        dr_low = float('inf')
+        inside_retracements = []
         outside_retracements = []
-        for _, row in post_dr_data.iterrows():
-            if row['high'] > dr_high and current_direction != 'up':
-                current_direction = 'up'
-                breakout_price = dr_high
-            elif row['low'] < dr_low and current_direction != 'down':
-                current_direction = 'down'
-                breakout_price = dr_low
 
-            if current_direction == 'up' and breakout_price:
-                retracement = (row['low'] - breakout_price) / breakout_price * 100
-                if retracement < 0:
-                    outside_retracements.append({
-                        'date': row['date'].isoformat(),
-                        'value': abs(retracement)
-                    })
-            elif current_direction == 'down' and breakout_price:
-                retracement = (row['high'] - breakout_price) / breakout_price * 100
-                if retracement > 0:
-                    outside_retracements.append({
-                        'date': row['date'].isoformat(),
-                        'value': retracement
-                    })
+        # Batch size for processing
+        batch_size = 10000
+        offset = 0
 
-        # Step 5: Calculate max retracements
+        while True:
+            # Fetch a batch of data
+            cur.execute(f"""
+                SELECT date, high, low, close 
+                FROM micro_e_mini_sp500_2019_2024_1min 
+                ORDER BY date ASC 
+                LIMIT {batch_size} OFFSET {offset};
+            """)
+            rows = cur.fetchall()
+            if not rows:
+                break  # Exit loop when no more data is available
+
+            # Convert batch to DataFrame
+            columns = [desc[0] for desc in cur.description]
+            batch_df = pd.DataFrame(rows, columns=columns)
+
+            # Ensure 'date' column is datetime format
+            batch_df['date'] = pd.to_datetime(batch_df['date'], errors='coerce')
+            batch_df.dropna(subset=['date'], inplace=True)
+
+            # Process DR data (13:30-14:30 UTC+0)
+            dr_data = batch_df[
+                ((batch_df['date'].dt.hour == 13) & (batch_df['date'].dt.minute >= 30)) |
+                ((batch_df['date'].dt.hour == 14) & (batch_df['date'].dt.minute <= 30))
+            ]
+            if not dr_data.empty:
+                dr_high = max(dr_high, dr_data['high'].max())
+                dr_low = min(dr_low, dr_data['low'].min())
+
+                # Calculate inside retracements
+                inside_df = dr_data[(dr_data['high'] < dr_high) & (dr_data['low'] > dr_low)].copy()
+                inside_df.loc[:, 'high_ret'] = (dr_high - inside_df['high']) / dr_high * 100
+                inside_df.loc[:, 'low_ret'] = (inside_df['low'] - dr_low) / dr_low * 100
+                inside_df.loc[:, 'value'] = inside_df[['high_ret', 'low_ret']].max(axis=1)
+                inside_retracements.extend(inside_df[['date', 'value']].to_dict(orient='records'))
+
+            # Process post-DR data (14:30-19:00 UTC+0)
+            post_dr_data = batch_df[
+                ((batch_df['date'].dt.hour == 14) & (batch_df['date'].dt.minute > 30)) |
+                ((batch_df['date'].dt.hour >= 15) & (batch_df['date'].dt.hour <= 18))
+            ]
+            if not post_dr_data.empty:
+                post_dr_array = post_dr_data[['date', 'high', 'low']].to_numpy()
+                current_direction = None
+                breakout_price = None
+
+                for row in post_dr_array:
+                    date, high, low = row
+
+                    if high > dr_high and current_direction != 'up':
+                        current_direction = 'up'
+                        breakout_price = dr_high
+                    elif low < dr_low and current_direction != 'down':
+                        current_direction = 'down'
+                        breakout_price = dr_low
+
+                    if current_direction == 'up' and breakout_price:
+                        retracement = (low - breakout_price) / breakout_price * 100
+                        if retracement < 0:
+                            outside_retracements.append({'date': date, 'value': abs(retracement)})
+                    elif current_direction == 'down' and breakout_price:
+                        retracement = (high - breakout_price) / breakout_price * 100
+                        if retracement > 0:
+                            outside_retracements.append({'date': date, 'value': retracement})
+
+            # Increment offset for next batch
+            offset += batch_size
+
+        # Calculate max retracements
         max_inside_ret = max([r['value'] for r in inside_retracements]) if inside_retracements else 0
         max_outside_ret = max([r['value'] for r in outside_retracements]) if outside_retracements else 0
 
