@@ -11,7 +11,7 @@ try:
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
         dbname=os.getenv("DB_NAME"),
-        sslmode="require"  # Use 'require' for secure SSL connections
+        sslmode="require"  # Use secure SSL connection
     )
     print("Successfully connected to Supabase!")
 except Exception as e:
@@ -33,59 +33,56 @@ def get_max_retracement():
     try:
         cur = conn.cursor()
 
-        # Step 1: Fetch all data from the database
+        # Step 1: Fetch DR data (13:30-14:30 UTC+0)
         cur.execute("""
-            SELECT id, ts_event, rtype, publisher_id, instrument_id, open, high, low, close, volume, symbol, date 
-            FROM micro_e_mini_sp500_2019_2024_1min
+            SELECT date, high, low, close 
+            FROM micro_e_mini_sp500_2019_2024_1min 
+            WHERE 
+                (EXTRACT(HOUR FROM date) = 13 AND EXTRACT(MINUTE FROM date) >= 30)
+                OR 
+                (EXTRACT(HOUR FROM date) = 14 AND EXTRACT(MINUTE FROM date) <= 30)
             ORDER BY date ASC;
         """)
-        rows = cur.fetchall()
-        columns = [desc[0] for desc in cur.description]
-        df = pd.DataFrame(rows, columns=columns)
+        dr_data_rows = cur.fetchall()
+        dr_columns = [desc[0] for desc in cur.description]
+        dr_data = pd.DataFrame(dr_data_rows, columns=dr_columns)
 
-        # Step 2: Ensure 'date' column is in datetime format
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        df = df.dropna(subset=['date'])  # Drop rows where 'date' could not be parsed
+        # Ensure 'date' column is datetime format
+        dr_data['date'] = pd.to_datetime(dr_data['date'], errors='coerce')
+        dr_data.dropna(subset=['date'], inplace=True)
 
-        # Step 3: Extract DR data (13:30-14:30 UTC+0)
-        dr_data = df[
-            ((df['date'].dt.hour == 13) & (df['date'].dt.minute >= 30)) |
-            ((df['date'].dt.hour == 14) & (df['date'].dt.minute <= 30))
-        ]
-
-        if dr_data.empty:
-            return {"error": "No DR data found for the specified time range"}, 404
-
+        # Calculate DR high and low
         dr_high = dr_data['high'].max()
         dr_low = dr_data['low'].min()
 
-        # Step 4: Extract post-DR data (14:30-19:00 UTC+0)
-        post_dr_data = df[
-            ((df['date'].dt.hour == 14) & (df['date'].dt.minute > 30)) |
-            ((df['date'].dt.hour >= 15) & (df['date'].dt.hour <= 18))
-        ]
+        # Step 2: Fetch post-DR data (14:30-19:00 UTC+0)
+        cur.execute("""
+            SELECT date, high, low, close 
+            FROM micro_e_mini_sp500_2019_2024_1min 
+            WHERE 
+                (EXTRACT(HOUR FROM date) = 14 AND EXTRACT(MINUTE FROM date) > 30)
+                OR 
+                (EXTRACT(HOUR FROM date) BETWEEN 15 AND 18)
+            ORDER BY date ASC;
+        """)
+        post_dr_rows = cur.fetchall()
+        post_dr_data = pd.DataFrame(post_dr_rows, columns=dr_columns)
 
-        if post_dr_data.empty:
-            return {"error": "No post-DR data found for the specified time range"}, 404
+        post_dr_data['date'] = pd.to_datetime(post_dr_data['date'], errors='coerce')
+        post_dr_data.dropna(subset=['date'], inplace=True)
 
-        # Step 5: Calculate inside and outside retracements
-        inside_retracements = []
-        outside_retracements = []
+        # Step 3: Calculate inside retracements
+        inside_df = dr_data[(dr_data['high'] < dr_high) & (dr_data['low'] > dr_low)]
+        inside_df['high_ret'] = (dr_high - inside_df['high']) / dr_high * 100
+        inside_df['low_ret'] = (inside_df['low'] - dr_low) / dr_low * 100
+        inside_df['value'] = inside_df[['high_ret', 'low_ret']].max(axis=1)
+        inside_retracements = inside_df[['date', 'value']].to_dict(orient='records')
 
-        # Inside DR retracements
-        for _, row in dr_data.iterrows():
-            if row['high'] < dr_high and row['low'] > dr_low:
-                high_ret = (dr_high - row['high']) / dr_high * 100
-                low_ret = (row['low'] - dr_low) / dr_low * 100
-                inside_retracements.append({
-                    'date': row['date'].isoformat(),
-                    'value': max(high_ret, low_ret)
-                })
-
-        # Outside DR retracements
+        # Step 4: Calculate outside retracements
         current_direction = None
         breakout_price = None
 
+        outside_retracements = []
         for _, row in post_dr_data.iterrows():
             if row['high'] > dr_high and current_direction != 'up':
                 current_direction = 'up'
@@ -109,7 +106,7 @@ def get_max_retracement():
                         'value': retracement
                     })
 
-        # Step 6: Calculate max retracements
+        # Step 5: Calculate max retracements
         max_inside_ret = max([r['value'] for r in inside_retracements]) if inside_retracements else 0
         max_outside_ret = max([r['value'] for r in outside_retracements]) if outside_retracements else 0
 
@@ -119,7 +116,7 @@ def get_max_retracement():
             'max_inside_retracement': float(max_inside_ret),
             'max_outside_retracement': float(max_outside_ret),
             'inside_retracements': inside_retracements,
-            'outside_retracements': outside_retracements
+            'outside_retracements': outside_retracements,
         })
 
     except Exception as e:
